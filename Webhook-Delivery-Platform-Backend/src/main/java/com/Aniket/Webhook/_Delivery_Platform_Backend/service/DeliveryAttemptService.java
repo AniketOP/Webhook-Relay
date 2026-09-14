@@ -6,6 +6,7 @@
     import com.Aniket.Webhook._Delivery_Platform_Backend.model.Event;
     import com.Aniket.Webhook._Delivery_Platform_Backend.model.Subscriber;
     import com.Aniket.Webhook._Delivery_Platform_Backend.repository.DeliveryAttemptRepo;
+    import jakarta.transaction.Transactional;
     import lombok.RequiredArgsConstructor;
     import org.springframework.http.MediaType;
     import org.springframework.http.ResponseEntity;
@@ -64,12 +65,15 @@
 
         public DeliveryAttempt sendRequest(DeliveryAttempt deliveryAttempt){
             String url = deliveryAttempt.getSubscriber().getUrl();
-            String data = deliveryAttempt.getEvent().getData();
+            String data = deliveryAttempt.getDeliveryId();
+
+            String idempotencyKey = deliveryAttempt.getEvent().getId();
 
             try{
                 ResponseEntity<String> response = restClient.post()
                         .uri(url)
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("Idempotency-Key",idempotencyKey)
                         .body(data)
                         .retrieve()
                         .toEntity(String.class);
@@ -87,10 +91,11 @@
 
         }
 
-        @Scheduled(fixedRate = 30000)
-        public void scheduled(){
-            List<DeliveryAttempt> deliveryAttempts = deliveryAttemptRepo.findByStatusAndNextRetryAtLessThanEqual("FAILED", Instant.now());
 
+        @Transactional
+        @Scheduled(fixedRate = 3000)
+        public void scheduled(){
+            List<DeliveryAttempt> deliveryAttempts = deliveryAttemptRepo.findDueForRetryWithLock("FAILED", Instant.now());
             for(DeliveryAttempt deliveryAttempt : deliveryAttempts) {
                 sendToDeliveryQueue(deliveryAttempt.getDeliveryId());
             }
@@ -110,7 +115,7 @@
                 deliveryAttempt.setStatus("FAILED");
                 deliveryAttempt.setRetryNo(deliveryAttempt.getRetryNo()+ 1);
                 long delaySeconds = (long)(30 * Math.pow(2, deliveryAttempt.getRetryNo()));
-                deliveryAttempt.setNextRetryAt(Instant.now().plusSeconds(delaySeconds));
+                deliveryAttempt.setNextRetryAt(Instant.now().plusSeconds(10));
             }
         }
 
