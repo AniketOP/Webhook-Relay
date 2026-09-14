@@ -1,0 +1,8 @@
+target/
+.idea/
+*.iml
+.mvn/wrapper/maven-wrapper.jar
+HELP.md
+debug-output.txt
+node_modules/
+.env
