@@ -9,7 +9,9 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class WebhookDeliveryPlatformBackendApplication {
 
 	public static void main(String[] args) {
+
 		SpringApplication.run(WebhookDeliveryPlatformBackendApplication.class, args);
+
 	}
 
 }

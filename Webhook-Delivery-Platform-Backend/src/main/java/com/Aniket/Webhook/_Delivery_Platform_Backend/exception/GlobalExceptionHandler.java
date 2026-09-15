@@ -23,4 +23,14 @@ public class GlobalExceptionHandler {
 
     }
 
+    @ExceptionHandler(InvalidUrlException.class)
+    public ResponseEntity<Map<String,Object>> handleInvalidUrl (InvalidUrlException ex){
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT).body(Map.of(
+                "timestamp", Instant.now().toString(),
+                "status", 422,
+                "error", "Provided URL is not safe or valid",
+                "message", ex.getMessage()
+        ));
+    }
+
 }

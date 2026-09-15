@@ -6,6 +6,7 @@
     import com.Aniket.Webhook._Delivery_Platform_Backend.model.Event;
     import com.Aniket.Webhook._Delivery_Platform_Backend.model.Subscriber;
     import com.Aniket.Webhook._Delivery_Platform_Backend.repository.DeliveryAttemptRepo;
+    import com.Aniket.Webhook._Delivery_Platform_Backend.util.HmacUtil;
     import jakarta.transaction.Transactional;
     import lombok.RequiredArgsConstructor;
     import org.springframework.http.MediaType;
@@ -65,15 +66,17 @@
 
         public DeliveryAttempt sendRequest(DeliveryAttempt deliveryAttempt){
             String url = deliveryAttempt.getSubscriber().getUrl();
-            String data = deliveryAttempt.getDeliveryId();
+            String data = deliveryAttempt.getEvent().getData();
 
-            String idempotencyKey = deliveryAttempt.getEvent().getId();
+            String idempotencyKey = deliveryAttempt.getDeliveryId();
+            String hmacSign = HmacUtil.sign(data,deliveryAttempt.getSubscriber().getSecret());
 
             try{
                 ResponseEntity<String> response = restClient.post()
                         .uri(url)
                         .contentType(MediaType.APPLICATION_JSON)
                         .header("Idempotency-Key",idempotencyKey)
+                        .header("Hmac-Sign",hmacSign)
                         .body(data)
                         .retrieve()
                         .toEntity(String.class);

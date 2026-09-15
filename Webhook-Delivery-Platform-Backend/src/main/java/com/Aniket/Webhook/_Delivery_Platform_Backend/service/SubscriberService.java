@@ -1,9 +1,11 @@
 package com.Aniket.Webhook._Delivery_Platform_Backend.service;
 
 import com.Aniket.Webhook._Delivery_Platform_Backend.dto.SubscriberDTO;
+import com.Aniket.Webhook._Delivery_Platform_Backend.exception.InvalidUrlException;
 import com.Aniket.Webhook._Delivery_Platform_Backend.exception.ResourceNotFoundException;
 import com.Aniket.Webhook._Delivery_Platform_Backend.model.Subscriber;
 import com.Aniket.Webhook._Delivery_Platform_Backend.repository.SubscriberRepo;
+import com.Aniket.Webhook._Delivery_Platform_Backend.util.UrlSecurityValidator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -18,13 +20,22 @@ public class SubscriberService {
     private final SubscriberRepo subscriberRepo;
 
     public Subscriber createSubscriber(SubscriberDTO subscriberdto) {
+
+        if (!UrlSecurityValidator.isSafeUrl(subscriberdto.getUrl())) {
+            throw new InvalidUrlException("The provided URL is not safe or valid.");
+        }
+
         Subscriber subscriber = new Subscriber();
 
         subscriber.setName(subscriberdto.getName());
         subscriber.setEmail(subscriberdto.getEmail());
         subscriber.setUrl(subscriberdto.getUrl());
+        subscriber.setSecret(String.valueOf(UUID.randomUUID()));
         subscriber.setActive(true);
         subscriber.setCreatedAt(Instant.now());
+
+
+
         return subscriberRepo.save(subscriber);
     }
 
