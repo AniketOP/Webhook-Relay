@@ -9,8 +9,12 @@
     import com.Aniket.Webhook._Delivery_Platform_Backend.util.HmacUtil;
     import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
     import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+    import io.micrometer.core.instrument.MeterRegistry;
     import jakarta.transaction.Transactional;
     import lombok.RequiredArgsConstructor;
+    import org.slf4j.Logger;
+    import org.slf4j.LoggerFactory;
+    import org.slf4j.MDC;
     import org.springframework.http.MediaType;
     import org.springframework.http.ResponseEntity;
     import org.springframework.kafka.annotation.KafkaListener;
@@ -26,6 +30,7 @@
     import java.util.List;
     import java.util.concurrent.TimeUnit;
 
+
     @Service
     @RequiredArgsConstructor
     public class DeliveryAttemptService {
@@ -38,6 +43,8 @@
         private final CircuitBreakerRegistry circuitBreakerRegistry;
 
 
+        private static final Logger log = LoggerFactory.getLogger(DeliveryAttemptService.class);
+        private final MeterRegistry meterRegistry;
 
         public DeliveryAttempt createDeliveryAttempt(DeliveryAttemptDTO dto) {
             Event event = eventService.getEventById(dto.getEventId());
@@ -72,55 +79,67 @@
 
 
         public DeliveryAttempt sendRequest(DeliveryAttempt deliveryAttempt){
-            String url = deliveryAttempt.getSubscriber().getUrl();
-            String data = deliveryAttempt.getEvent().getData();
 
-            String subscriberId = deliveryAttempt.getSubscriber().getSubscriberId();
-            CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker(subscriberId);
-
-            if (circuitBreaker.getState() == CircuitBreaker.State.OPEN) {
-                handleFailure(deliveryAttempt, "Circuit breaker OPEN for subscriber " + subscriberId + " — skipping call.");
-                return deliveryAttemptRepo.save(deliveryAttempt);
-            }
-
-            String idempotencyKey = deliveryAttempt.getDeliveryId();
-            String hmacSign = HmacUtil.sign(data,deliveryAttempt.getSubscriber().getSecret());
-
-            Instant callStart = Instant.now();
-
+            MDC.put("deliveryId", deliveryAttempt.getDeliveryId());
             try{
-                ResponseEntity<String> response = restClient.post()
-                        .uri(url)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .header("Idempotency-Key",idempotencyKey)
-                        .header("Hmac-Sign",hmacSign)
-                        .body(data)
-                        .retrieve()
-                        .toEntity(String.class);
+                String url = deliveryAttempt.getSubscriber().getUrl();
+                String data = deliveryAttempt.getEvent().getData();
+                String subscriberId = deliveryAttempt.getSubscriber().getSubscriberId();
+                CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker(subscriberId);
 
-                Duration elapsed = Duration.between(callStart, Instant.now());
-                circuitBreaker.onSuccess(elapsed.toMillis(), TimeUnit.MILLISECONDS);
+                if (circuitBreaker.getState() == CircuitBreaker.State.OPEN) {
+                    log.warn("Circuit breaker OPEN for subscriber {} — skipping delivery", subscriberId);
+                    meterRegistry.counter("delivery.attempts", "outcome", "circuit_open", "subscriber", subscriberId).increment();
+                    handleFailure(deliveryAttempt, "Circuit breaker OPEN for subscriber " + subscriberId + " — skipping call.");
+                    return deliveryAttemptRepo.save(deliveryAttempt);
+                }
 
-                deliveryAttempt.setStatus("SUCCESS");
-                deliveryAttempt.setErrorReason(null);
-                deliveryAttempt.setNextRetryAt(null);
-                deliveryAttempt.setRetryNo(0);
+                String idempotencyKey = deliveryAttempt.getDeliveryId();
+                String hmacSign = HmacUtil.sign(data, deliveryAttempt.getSubscriber().getSecret());
 
-            }catch(RestClientResponseException e){
+                log.info("Attempting delivery to subscriber {} at {}", subscriberId, url);
 
-                Duration elapsed = Duration.between(callStart,Instant.now());
-                circuitBreaker.onError(elapsed.toMillis(),TimeUnit.MILLISECONDS,e);
+                Instant callStart = Instant.now();
+                try{
+                    ResponseEntity<String> response = restClient.post()
+                            .uri(url).contentType(MediaType.APPLICATION_JSON)
+                            .header("Idempotency-Key", idempotencyKey)
+                            .header("Hmac-Sign", hmacSign)
+                            .body(data).retrieve().toEntity(String.class);
 
-                handleFailure(deliveryAttempt,"HTTP " + e.getStatusCode() + " - " + e.getResponseBodyAsString());
-            }catch (Exception e) {
+                    Duration elapsed = Duration.between(callStart, Instant.now());
+                    circuitBreaker.onSuccess(elapsed.toMillis(), TimeUnit.MILLISECONDS);
 
-                Duration elapsed = Duration.between(callStart,Instant.now());
-                circuitBreaker.onError(elapsed.toMillis(),TimeUnit.MILLISECONDS,e);
-                handleFailure(deliveryAttempt,"Network Error: " + e.getMessage());
+                    log.info("Delivery SUCCESS to subscriber {} in {}ms", subscriberId, elapsed.toMillis());
+                    meterRegistry.counter("delivery.attempts", "outcome", "success", "subscriber", subscriberId).increment();
+                    meterRegistry.timer("delivery.duration", "outcome", "success", "subscriber", subscriberId).record(elapsed);
+
+                    deliveryAttempt.setStatus("SUCCESS");
+                    deliveryAttempt.setErrorReason(null);
+                    deliveryAttempt.setNextRetryAt(null);
+                    deliveryAttempt.setRetryNo(0);
+
+                }catch(RestClientResponseException e){
+                    Duration elapsed = Duration.between(callStart, Instant.now());
+                    circuitBreaker.onError(elapsed.toMillis(), TimeUnit.MILLISECONDS, e);
+                    log.warn("Delivery FAILED (HTTP {}) to subscriber {}", e.getStatusCode(), subscriberId);
+                    meterRegistry.counter("delivery.attempts", "outcome", "http_failure", "subscriber", subscriberId).increment();
+                    meterRegistry.timer("delivery.duration", "outcome", "http_failure", "subscriber", subscriberId).record(elapsed);
+                    handleFailure(deliveryAttempt, "HTTP " + e.getStatusCode() + " - " + e.getResponseBodyAsString());
+
+                }catch (Exception e) {
+                    Duration elapsed = Duration.between(callStart, Instant.now());
+                    circuitBreaker.onError(elapsed.toMillis(), TimeUnit.MILLISECONDS, e);
+                    log.warn("Delivery FAILED (network error) to subscriber {}: {}", subscriberId, e.getMessage());
+                    meterRegistry.counter("delivery.attempts", "outcome", "network_failure", "subscriber", subscriberId).increment();
+                    meterRegistry.timer("delivery.duration", "outcome", "network_failure", "subscriber", subscriberId).record(elapsed);
+                    handleFailure(deliveryAttempt, "Network Error: " + e.getMessage());
+                }
+
+                return deliveryAttemptRepo.save(deliveryAttempt);
+            } finally {
+                MDC.clear();
             }
-
-            return deliveryAttemptRepo.save(deliveryAttempt);
-
         }
 
         private DeliveryAttempt circuitOpenFallback(DeliveryAttempt deliveryAttempt,Throwable t){
@@ -165,8 +184,14 @@
 
         @KafkaListener(topics = "delivery-attempts", groupId = "webhook-delivery-group")
         public void receivedDeliveryId(String id){
-            DeliveryAttempt deliveryAttempt = getDeliveryAttemptById(id);
-            sendRequest(deliveryAttempt);
+            MDC.put("deliveryId", id);
+            try {
+                log.info("Received delivery ID from Kafka: {}", id);
+                DeliveryAttempt deliveryAttempt = getDeliveryAttemptById(id);
+                sendRequest(deliveryAttempt);
+            } finally {
+                MDC.clear();
+            }
         }
 
 
