@@ -7,6 +7,8 @@
     import com.Aniket.Webhook._Delivery_Platform_Backend.model.Subscriber;
     import com.Aniket.Webhook._Delivery_Platform_Backend.repository.DeliveryAttemptRepo;
     import com.Aniket.Webhook._Delivery_Platform_Backend.util.HmacUtil;
+    import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+    import io.github.resilience4j.circuitbreaker.CircuitBreaker;
     import jakarta.transaction.Transactional;
     import lombok.RequiredArgsConstructor;
     import org.springframework.http.MediaType;
@@ -18,8 +20,11 @@
     import org.springframework.web.client.RestClient;
     import org.springframework.web.client.RestClientResponseException;
 
+    import java.sql.Time;
+    import java.time.Duration;
     import java.time.Instant;
     import java.util.List;
+    import java.util.concurrent.TimeUnit;
 
     @Service
     @RequiredArgsConstructor
@@ -30,6 +35,7 @@
         private final SubscriberService subscriberService;
         private final RestClient restClient = RestClient.create();
         private final KafkaTemplate<String , String > kafkaTemplate;
+        private final CircuitBreakerRegistry circuitBreakerRegistry;
 
 
 
@@ -64,12 +70,23 @@
             return deliveryAttemptRepo.save(existing);
         }
 
+
         public DeliveryAttempt sendRequest(DeliveryAttempt deliveryAttempt){
             String url = deliveryAttempt.getSubscriber().getUrl();
             String data = deliveryAttempt.getEvent().getData();
 
+            String subscriberId = deliveryAttempt.getSubscriber().getSubscriberId();
+            CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker(subscriberId);
+
+            if (circuitBreaker.getState() == CircuitBreaker.State.OPEN) {
+                handleFailure(deliveryAttempt, "Circuit breaker OPEN for subscriber " + subscriberId + " — skipping call.");
+                return deliveryAttemptRepo.save(deliveryAttempt);
+            }
+
             String idempotencyKey = deliveryAttempt.getDeliveryId();
             String hmacSign = HmacUtil.sign(data,deliveryAttempt.getSubscriber().getSecret());
+
+            Instant callStart = Instant.now();
 
             try{
                 ResponseEntity<String> response = restClient.post()
@@ -81,17 +98,34 @@
                         .retrieve()
                         .toEntity(String.class);
 
+                Duration elapsed = Duration.between(callStart, Instant.now());
+                circuitBreaker.onSuccess(elapsed.toMillis(), TimeUnit.MILLISECONDS);
+
                 deliveryAttempt.setStatus("SUCCESS");
                 deliveryAttempt.setErrorReason(null);
+                deliveryAttempt.setNextRetryAt(null);
+                deliveryAttempt.setRetryNo(0);
+
             }catch(RestClientResponseException e){
+
+                Duration elapsed = Duration.between(callStart,Instant.now());
+                circuitBreaker.onError(elapsed.toMillis(),TimeUnit.MILLISECONDS,e);
 
                 handleFailure(deliveryAttempt,"HTTP " + e.getStatusCode() + " - " + e.getResponseBodyAsString());
             }catch (Exception e) {
+
+                Duration elapsed = Duration.between(callStart,Instant.now());
+                circuitBreaker.onError(elapsed.toMillis(),TimeUnit.MILLISECONDS,e);
                 handleFailure(deliveryAttempt,"Network Error: " + e.getMessage());
             }
 
             return deliveryAttemptRepo.save(deliveryAttempt);
 
+        }
+
+        private DeliveryAttempt circuitOpenFallback(DeliveryAttempt deliveryAttempt,Throwable t){
+            handleFailure(deliveryAttempt,"Circuit Breaker OPEN - subscriber marked unhealthy, skipping call.");
+            return deliveryAttemptRepo.save(deliveryAttempt);
         }
 
 
