@@ -42,7 +42,6 @@
         private final KafkaTemplate<String , String > kafkaTemplate;
         private final CircuitBreakerRegistry circuitBreakerRegistry;
 
-
         private static final Logger log = LoggerFactory.getLogger(DeliveryAttemptService.class);
         private final MeterRegistry meterRegistry;
 
@@ -171,7 +170,7 @@
                 deliveryAttempt.setStatus("FAILED");
                 deliveryAttempt.setRetryNo(deliveryAttempt.getRetryNo()+ 1);
                 long delaySeconds = (long)(30 * Math.pow(2, deliveryAttempt.getRetryNo()));
-                deliveryAttempt.setNextRetryAt(Instant.now().plusSeconds(10));
+                deliveryAttempt.setNextRetryAt(Instant.now().plusSeconds(delaySeconds));
             }
         }
 
