@@ -36,6 +36,11 @@ public class ApiKeyFilter extends HttpFilter {
             }
         }
 
+        if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+            chain.doFilter(request, response);
+            return;
+        }
+
         String apiKey = request.getHeader("X-API-KEY");
 
         if(apiKey == null || apiKey.isBlank()){
