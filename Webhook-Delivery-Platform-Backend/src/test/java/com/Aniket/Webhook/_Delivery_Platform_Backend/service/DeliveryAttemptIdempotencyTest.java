@@ -60,6 +60,7 @@ class DeliveryAttemptIdempotencyTest {
         attempt.setStatus("PENDING");
         attempt.setRetryNo(0);
         attempt.setAttemptedAt(Instant.now());
+        //attempt.setAttempt
 
         DeliveryAttempt saved = deliveryAttemptRepo.save(attempt);
         String originalId = saved.getDeliveryId();
@@ -70,5 +71,6 @@ class DeliveryAttemptIdempotencyTest {
 
         assertEquals(originalId, updated.getDeliveryId());
         assertEquals(1L, deliveryAttemptRepo.count());
+
     }
 }
